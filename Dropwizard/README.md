@@ -234,3 +234,217 @@ When we go to the endpoint at http://localhost:8080/api/hello we should see the 
 ```console
 Hello Dropwizard is running on 192.168.0.14
 ```
+
+Externalize Configuration
+-------------------------
+Dropwizard has many options for configuring the built-in compo‐ nents (like the servlet engine or data sources for databases) as well as creating entirely new commands that you can run and configure with a configurations file.
+- Let’s bind all of the helloapp.* properties to our HelloRestResource class using YAML.(With Dropwizard, we only have the YAML option.)
+- So let’s create a file in the root of our project called conf/applica‐ tion.yml (note, you’ll need to create the conf directory if it doesn’t exist). We put our configuration files in the conf folder to help us organize our project’s different configuration files (the naming of the directory is not significant (i.e., it does not have any conven‐ tional meaning to Dropwizard). Let’s add some configuration to our conf/application.yml file:
+```yml
+# configurations for our sayingFactory
+    helloapp:
+      saying: Hello Dropwizard running on
+```
+
+In this case, we’re setting the property to a specific value.
+- What if we wanted to be able to override it based on some environment conditions? We could override it by passing in a Java system variable like this **-Ddw.helloapp.saying=Guten Tag**. Note that the dw.* part of the system property name is significant; it tells Dropwizard to apply the value to one of the configuration settings of our application.
+- What if we wanted to override the property based on the value of an OS environment variable? That would look like:
+```yml
+helloapp:
+  saying: ${HELLOAPP_SAYING:-Guten Tag aus}
+```
+The pattern for the value of the property is to first look at an environment variable if it exists. If the environment variable is unset, then use the default value provided. We also need to tell our application specifically that we want to use environment-variable substitution.
+- In the HelloDropwizardApplication class, edit the initialize() method to look like:
+```java
+@Override
+    public void initialize(final Bootstrap<HelloDropwizardConfiguration> bootstrap) {
+        bootstrap.setConfigurationSourceProvider(
+                new SubstitutingSourceProvider(
+                        bootstrap.getConfigurationSourceProvider(),
+                        new EnvironmentVariableSubstitutor(false)));
+    }
+```
+- Now set up configuration. Let’s create a new class called HelloSayingFactory in src/main/java/com/sahoora/examples/dropwizard/resources directory.
+```java
+import com.fasterxml.jackson.annotation.JsonProperty;
+import org.hibernate.validator.constraints.NotEmpty;
+
+public class HelloSayingFactory {
+
+    @NotEmpty
+    private String saying;
+
+    @JsonProperty
+    public String getSaying() {
+        return saying;
+    }
+
+    @JsonProperty
+    public void setSaying(String saying) {
+        this.saying = saying;
+    }
+}
+```
+- This is a simple Java Bean with some validation (@NotEmpty, from the hibernate validators library) and Jackson (@JsonProperty) annotations.
+This class wraps whatever configurations are under our helloapp configuration in our YAML file; at the moment, we only have “saying.”
+
+- Now add HelloSayingFactory to HelloDropwizardConfiguration class.
+```java
+public class HelloDropwizardConfiguration extends Configuration {
+    private HelloSayingFactory sayingFactory;
+
+    @JsonProperty("helloapp")
+    public HelloSayingFactory getSayingFactory() {
+        return sayingFactory;
+    }
+
+    @JsonProperty("helloapp")
+    public void setSayingFactory(HelloSayingFactory sayingFactory) {
+        this.sayingFactory = sayingFactory;
+    }
+}
+```
+- Lastly, we need to inject the configuration into our HelloRestResource.
+```java
+import javax.ws.rs.GET;
+import javax.ws.rs.Path;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
+
+@Path("/api")
+public class HelloRestResource {
+
+    private String saying;
+
+    public HelloRestResource(final String saying) {
+        this.saying = saying;
+    }
+
+    @Path("/hello")
+    @GET
+    public String hello() {
+        String hostAddress = null;
+        try {
+            hostAddress = InetAddress.getLocalHost().getHostAddress();
+        } catch (UnknownHostException e) {
+            hostAddress = "Unknown";
+        }
+        return saying + hostAddress;
+    }
+}
+```
+
+- Then update our HelloDropwizardApplication to inject the configurations to our REST Resource.
+```java
+@Override
+public void run(final HelloDropwizardConfiguration configuration,
+                final Environment environment) {
+    environment.jersey().register(
+            new HelloRestResource(configuration.getSayingFactory().getSaying()));
+}
+```
+There’s a very clear pattern here: bind our Java objects to a YAML configuration file and keep everything very simple and intuitive without leveraging complex frameworks.
+
+- Let’s run our application. To do this, let’s update our pom.xml to pass our new conf/application.yml file as follows:
+```xml
+<plugin>
+    <groupId>org.codehaus.mojo</groupId>
+    <artifactId>exec-maven-plugin</artifactId>
+    <configuration>
+        <mainClass>${mainClass}</mainClass>
+        <arguments>
+            <argument>server</argument>
+            <argument>conf/application.yml</argument>
+        </arguments>
+    </configuration>
+</plugin>
+```
+
+From the command line, we can now run:
+```console
+$ mvn clean package exec:java
+```
+When you navigate to http://localhost:8080/api/hello, we should see one of the sayings:
+```console
+Guten Tag aus192.168.0.14
+```
+If we stop the microservice, and export an environment variable, we should see a new saying:
+```console
+    $ export HELLOAPP_SAYING='Hello Dropwizard from'
+    $ mvn clean package exec:java
+```
+then the output is as follows
+```console
+Hello Dropwizard from 192.168.0.14
+```
+
+Expose Application Metrics
+--------------------------
+Metrics are enabled by default on the admin port (8081, by default) but how does Dropwizard know anything specific about our application? Let’s sprinkle a couple declarative annotations on our HolaRestResource.
+
+```java
+import com.codahale.metrics.annotation.Timed;
+
+import javax.ws.rs.GET;
+import javax.ws.rs.Path;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
+
+@Path("/api")
+public class HelloRestResource {
+
+    private String saying;
+
+    public HelloRestResource(final String saying) {
+        this.saying = saying;
+    }
+
+    @Timed
+    @Path("/hello")
+    @GET
+    public String hello() {
+        String hostAddress = null;
+        try {
+            hostAddress = InetAddress.getLocalHost().getHostAddress();
+        } catch (UnknownHostException e) {
+            hostAddress = "Unknown";
+        }
+        return saying + hostAddress;
+    }
+}
+```
+We’ve added the @Timed annotation which tracks how long invocations to our service take. Other annotations for gathering metrics include:
+
+@Metered
+The rate at which the service is called.
+
+@ExceptionMetered
+The rate at which exceptions are thrown
+
+Build and restart your microservice and try hitting your service at http://localhost:8080/api/hello a couple times. Then if you navigate to http://localhost:8081/metrics?pretty=true and scroll toward the bottom (may be different for yours), you should see the metrics for our service:
+
+```json
+"timers" : {
+    "com.sahoora.examples.dropwizard.resources.HelloRestResource.hello" : {
+      "count" : 4,
+      "max" : 0.013907083,
+      "mean" : 0.004214093645040806,
+      "min" : 1.26618E-4,
+      "p50" : 0.001228685,
+      "p75" : 0.0026217180000000003,
+      "p95" : 0.013907083,
+      "p98" : 0.013907083,
+      "p99" : 0.013907083,
+      "p999" : 0.013907083,
+      "stddev" : 0.005346304971237027,
+      "m15_rate" : 0.004251326315048105,
+      "m1_rate" : 0.03438649024111103,
+      "m5_rate" : 0.011671138629069102,
+      "mean_rate" : 0.06889648697524442,
+      "duration_units" : "seconds",
+      "rate_units" : "calls/second"
+    }
+  }
+```
+Calling Another Service
+-----------------------

@@ -92,6 +92,7 @@
           <mainClass>${mainClass}</mainClass>
           <arguments>
             <argument>server</argument>
+            <argument>conf/application.yml</argument>
           </arguments>
         </configuration>
       </plugin>
